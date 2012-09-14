@@ -21,6 +21,8 @@
 #include "lj_state.h"
 #include "lj_lib.h"
 
+#include <libgen.h> /* dirname */
+
 /* -- Module registration ------------------------------------------------- */
 
 LUALIB_API const char *luaL_findtable(lua_State *L, int idx,
@@ -237,6 +239,7 @@ LUALIB_API void luaL_unref(lua_State *L, int t, int ref)
 
 typedef struct FileReaderCtx {
   FILE *fp;
+  char *filename;
   char buf[LUAL_BUFFERSIZE];
 } FileReaderCtx;
 
@@ -245,13 +248,33 @@ static const char *reader_file(lua_State *L, void *ud, size_t *size)
   FileReaderCtx *ctx = (FileReaderCtx *)ud;
   UNUSED(L);
   if (feof(ctx->fp)) return NULL;
-  *size = fread(ctx->buf, 1, sizeof(ctx->buf), ctx->fp);
+  size_t read_to = sizeof(ctx->buf);
+  char *buffer = ctx->buf;
+  size_t written = 0;
+  if (NULL != ctx->filename) {
+    /*
+      wow, this is so very hackish
+      Unfortunately according to #lua there is no sound way to add a variable to scope.
+      `;` is used instead of `\n` to keep line-count sane.
+    */
+    char *path = strdup( ctx->filename );
+    written = sprintf(buffer, "local __file__ = '%s';local __path__ = '%s';", ctx->filename, dirname( path ));
+    free(path);
+    read_to -= written;
+    buffer += written;
+    ctx->filename = NULL;
+  }
+  *size = fread(buffer, 1, read_to, ctx->fp);
+  if (*size > 0) {
+    *size += written;
+  }
   return *size > 0 ? ctx->buf : NULL;
 }
 
 LUALIB_API int luaL_loadfile(lua_State *L, const char *filename)
 {
   FileReaderCtx ctx;
+  ctx.filename = NULL;
   int status;
   const char *chunkname;
   if (filename) {
@@ -260,6 +283,7 @@ LUALIB_API int luaL_loadfile(lua_State *L, const char *filename)
       lua_pushfstring(L, "cannot open %s: %s", filename, strerror(errno));
       return LUA_ERRFILE;
     }
+    ctx.filename = (char *)filename;
     chunkname = lua_pushfstring(L, "@%s", filename);
   } else {
     ctx.fp = stdin;
